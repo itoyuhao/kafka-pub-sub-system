@@ -1,0 +1,83 @@
+erDiagram
+    fact_transactions {
+        String transaction_id PK
+        String user_id FK
+        Decimal64 amount
+        DateTime64 transaction_time
+        String transaction_status
+        String country_code
+        String store_id
+        DateTime64 _inserted_at
+    }
+
+    fact_logins {
+        String login_id PK
+        String user_id FK
+        DateTime64 login_time
+        String ip_address
+        String login_status
+        String country_code
+        DateTime64 _inserted_at
+    }
+
+    fact_user_status_changes {
+        String user_id FK
+        String new_status
+        String reason
+        Array_String related_transaction_ids
+        DateTime64 valid_from
+        DateTime64 _inserted_at
+    }
+
+    view_dim_user_status {
+        String user_id
+        String account_status
+        String reason
+        DateTime64 valid_from
+        DateTime64 valid_to
+        Int is_current
+    }
+
+    view_user_transaction_summary {
+        String user_id
+        UInt64 total_transactions
+        Decimal64 total_amount
+        Decimal64 avg_amount
+        Decimal64 max_amount
+        Float64 success_rate_pct
+        DateTime64 first_transaction_at
+        DateTime64 last_transaction_at
+    }
+
+    view_user_login_countries {
+        String user_id
+        UInt64 total_logins
+        UInt64 distinct_countries
+        Array_String country_list
+        Float64 login_failure_rate_pct
+        DateTime64 last_login_at
+    }
+
+    view_hourly_transaction_stats {
+        DateTime64 hour
+        UInt64 transaction_count
+        Decimal64 total_amount
+        UInt64 unique_users
+        UInt64 failed_count
+    }
+
+    view_country_transaction_stats {
+        String country_code
+        UInt64 transaction_count
+        Decimal64 total_amount
+        Decimal64 avg_amount
+        UInt64 unique_users
+        Float64 failure_rate_pct
+    }
+
+    fact_transactions ||--o{ view_user_transaction_summary : "GROUP BY user_id"
+    fact_transactions ||--o{ view_hourly_transaction_stats : "GROUP BY hour"
+    fact_transactions ||--o{ view_country_transaction_stats : "GROUP BY country_code"
+    fact_logins ||--o{ view_user_login_countries : "GROUP BY user_id"
+    fact_user_status_changes ||--o{ view_dim_user_status : "LEAD() OVER user_id"
+    fact_transactions }o--o{ fact_user_status_changes : "related_transaction_ids"

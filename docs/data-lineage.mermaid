@@ -1,0 +1,63 @@
+flowchart LR
+    subgraph Producer["Producer (Python)"]
+        GEN_TXN["generate_transaction()"]
+        GEN_LOGIN["generate_login()"]
+        FRAUD["simulate_fraud_burst()"]
+    end
+
+    subgraph Kafka["Kafka (KRaft)"]
+        T_TXN[["epay_transactions\n(3 partitions)"]]
+        T_LOGIN[["epay_logins\n(3 partitions)"]]
+        T_DLQ[["epay_dlq\n(1 partition)"]]
+    end
+
+    subgraph Consumer["Consumer (Python)"]
+        VALIDATE["Schema Validation"]
+        LATE["Late Data Check"]
+        VELOCITY["Velocity Check\n(Sliding Window)"]
+        DLQ_SEND["DLQ Handler"]
+    end
+
+    subgraph ClickHouse["ClickHouse (OLAP)"]
+        subgraph FactTables["Fact Tables (Append-only)"]
+            FT["fact_transactions"]
+            FL["fact_logins"]
+            FSC["fact_user_status_changes"]
+        end
+
+        subgraph DimViews["Dimension Views"]
+            VDS["view_dim_user_status\n(SCD2)"]
+        end
+
+        subgraph AnalyticalViews["Analytical Views (Dashboard-Ready)"]
+            VUTS["view_user_transaction_summary\n(user behavior)"]
+            VULC["view_user_login_countries\n(geo risk)"]
+            VHTS["view_hourly_transaction_stats\n(time trend)"]
+            VCTS["view_country_transaction_stats\n(geo distribution)"]
+        end
+    end
+
+    GEN_TXN --> T_TXN
+    GEN_LOGIN --> T_LOGIN
+    FRAUD --> T_TXN
+
+    T_TXN --> VALIDATE
+    T_LOGIN --> VALIDATE
+
+    VALIDATE -->|"valid"| FT
+    VALIDATE -->|"valid"| FL
+    VALIDATE -->|"invalid"| DLQ_SEND
+
+    FT --> LATE
+    LATE -->|"on time"| VELOCITY
+    LATE -->|"late"| DLQ_SEND
+
+    VELOCITY -->|"anomaly detected"| FSC
+
+    DLQ_SEND --> T_DLQ
+
+    FT -.-> VUTS
+    FT -.-> VHTS
+    FT -.-> VCTS
+    FL -.-> VULC
+    FSC -.-> VDS

@@ -1,0 +1,110 @@
+version: '3.8'
+
+services:
+  # 1. 核心訊息佇列 (KRaft 模式，不需要 ZooKeeper)
+  # TODO [Scalability] 多 broker 架構：
+  #   - 新增 kafka-2, kafka-3 服務，各自設定不同的 KAFKA_NODE_ID
+  #   - 更新 KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093,2@kafka-2:9093,3@kafka-3:9093'
+  #   - 將 replication-factor 提高至 2 或 3 以實現 fault tolerance
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_LISTENERS: 'PLAINTEXT://:9092,CONTROLLER://:9093'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID}
+      # 單節點叢集必備：副本因子都設為 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # 禁止自動建立 topic，確保 partition 數量由 kafka-init 控制
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 2. Topic 初始化 (one-shot，跑完即退出)
+  kafka-init:
+    image: confluentinc/cp-kafka:7.4.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo 'Creating Kafka topics...'
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --topic epay_transactions --partitions 3 --replication-factor 1
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --topic epay_logins --partitions 3 --replication-factor 1
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --topic epay_dlq --partitions 1 --replication-factor 1
+        kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --topic epay_account_alerts --partitions 3 --replication-factor 1
+        echo 'Topics created:'
+        kafka-topics --list --bootstrap-server kafka:9092
+
+  # 3. 視覺化監控介面
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: e-pay-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # 4. 分析型資料庫 (OLAP)
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3.3
+    ports:
+      - "8123:8123"   # HTTP interface
+      - "9000:9000"   # Native TCP
+    environment:
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+      CLICKHOUSE_PASSWORD: ""
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 5. 資料生產者 (Python)
+  producer:
+    build: ./producer
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      BOOTSTRAP_SERVERS: "kafka:9092"
+
+  # 6. 資料消費者 (Python，包含 DLQ 與異常偵測邏輯)
+  # TODO [Scalability] Consumer 水平擴展：
+  #   - 加入 deploy.replicas: 3 即可啟動多個 consumer instance
+  #   - 同一 group.id 下，Kafka 會自動將 partition 分配給不同 instance
+  #   - 因為 partition key = user_id，同一使用者的事件一定在同一 partition，
+  #     Velocity Check 的 in-memory state 不會跨 instance，不需要外部 state store
+  consumer:
+    build: ./consumer
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      clickhouse:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: "kafka:9092"
+      CLICKHOUSE_HOST: "clickhouse"
+      CLICKHOUSE_PORT: "8123"
+
+volumes:
+  kafka_data:
+  clickhouse_data:
