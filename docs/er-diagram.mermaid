@@ -29,6 +29,14 @@ erDiagram
         DateTime64 _inserted_at
     }
 
+    epay_account_alerts {
+        String user_id FK
+        String alert_type
+        String reason
+        Array_String related_transaction_ids
+        String triggered_at
+    }
+
     view_dim_user_status {
         String user_id
         String account_status
@@ -81,3 +89,4 @@ erDiagram
     fact_logins ||--o{ view_user_login_countries : "GROUP BY user_id"
     fact_user_status_changes ||--o{ view_dim_user_status : "LEAD() OVER user_id"
     fact_transactions }o--o{ fact_user_status_changes : "related_transaction_ids"
+    fact_user_status_changes ||--|| epay_account_alerts : "anomaly triggers alert"

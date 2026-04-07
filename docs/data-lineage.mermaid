@@ -1,5 +1,5 @@
 flowchart LR
-    subgraph Producer["Producer (Python)"]
+    subgraph Producer["Producer (Async - AIOProducer)"]
         GEN_TXN["generate_transaction()"]
         GEN_LOGIN["generate_login()"]
         FRAUD["simulate_fraud_burst()"]
@@ -9,13 +9,15 @@ flowchart LR
         T_TXN[["epay_transactions\n(3 partitions)"]]
         T_LOGIN[["epay_logins\n(3 partitions)"]]
         T_DLQ[["epay_dlq\n(1 partition)"]]
+        T_ALERTS[["epay_account_alerts\n(3 partitions)"]]
     end
 
-    subgraph Consumer["Consumer (Python)"]
-        VALIDATE["Schema Validation"]
+    subgraph Consumer["Consumer (Sync)"]
+        PARSE["JSON Parse\n+ Dataclass Validation"]
         LATE["Late Data Check"]
         VELOCITY["Velocity Check\n(Sliding Window)"]
         DLQ_SEND["DLQ Handler"]
+        ALERT_SEND["Alert Publisher"]
     end
 
     subgraph ClickHouse["ClickHouse (OLAP)"]
@@ -37,24 +39,34 @@ flowchart LR
         end
     end
 
+    subgraph Downstream["Downstream Services (Future)"]
+        GW["Gateway Service\n(block transactions)"]
+        NOTIF["Notification Service\n(SMS / email)"]
+    end
+
     GEN_TXN --> T_TXN
     GEN_LOGIN --> T_LOGIN
     FRAUD --> T_TXN
 
-    T_TXN --> VALIDATE
-    T_LOGIN --> VALIDATE
+    T_TXN --> PARSE
+    T_LOGIN --> PARSE
 
-    VALIDATE -->|"valid"| FT
-    VALIDATE -->|"valid"| FL
-    VALIDATE -->|"invalid"| DLQ_SEND
+    PARSE -->|"valid txn"| FT
+    PARSE -->|"valid login"| FL
+    PARSE -->|"TypeError / JSONError"| DLQ_SEND
 
     FT --> LATE
     LATE -->|"on time"| VELOCITY
     LATE -->|"late"| DLQ_SEND
 
     VELOCITY -->|"anomaly detected"| FSC
+    VELOCITY -->|"anomaly detected"| ALERT_SEND
 
     DLQ_SEND --> T_DLQ
+    ALERT_SEND --> T_ALERTS
+
+    T_ALERTS -.-> GW
+    T_ALERTS -.-> NOTIF
 
     FT -.-> VUTS
     FT -.-> VHTS
